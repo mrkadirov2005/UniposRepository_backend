@@ -50,10 +50,16 @@ router.post("/manual-backup-drive", async (req, res) => {
 
 
 
-const GOOGLE_APPS_SCRIPT_URL = "https://script.google.com/macros/s/AKfycbzgckYdxmsw8WMCsK3bZkeKI1MXLhk2XAGhdxtnlBYdJRWDhN0Imh8arbuTC0qOmkAw/exec";
+const GOOGLE_APPS_SCRIPT_URL =
+  process.env.GOOGLE_APPS_SCRIPT_URL ||
+  "https://script.google.com/macros/s/AKfycbzgckYdxmsw8WMCsK3bZkeKI1MXLhk2XAGhdxtnlBYdJRWDhN0Imh8arbuTC0qOmkAw/exec";
 
 router.post("/backup-to-sheets", async (req, res) => {
   try {
+    if (!req.body || typeof req.body !== "object") {
+      return res.status(400).json({ message: "Backup payload is required" });
+    }
+
     // Forward the JSON backup data to Google Apps Script
     const response = await fetch(GOOGLE_APPS_SCRIPT_URL, {
       method: "POST",
@@ -63,8 +69,23 @@ router.post("/backup-to-sheets", async (req, res) => {
       body: JSON.stringify(req.body),
     });
 
-    // Get the response from Google Apps Script
-    const data = await response.json();
+    const rawText = await response.text();
+    let data;
+
+    try {
+      data = rawText ? JSON.parse(rawText) : {};
+    } catch {
+      data = {
+        message: rawText || "Google Apps Script returned a non-JSON response",
+      };
+    }
+
+    if (!response.ok) {
+      console.error("Google Apps Script backup failed:", {
+        status: response.status,
+        body: rawText.slice(0, 500),
+      });
+    }
 
     // Forward the response back to the frontend
     res.status(response.status).json(data);
