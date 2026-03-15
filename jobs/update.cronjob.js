@@ -3,8 +3,9 @@ import { client } from "../config/dbcon.js";
 import fs from "fs";
 import path from "path";
 import archiver from "archiver";
+import { spawn } from "child_process";
 import { google } from "googleapis";
-import { fileURLToPath } from "url";
+import { fileURLToPath, URL } from "url";
 import { dirname } from "path";
 
 const __filename = fileURLToPath(import.meta.url);
@@ -146,61 +147,89 @@ if (!fs.existsSync(BACKUP_FAILED_DIR)) {
 }
 
 /**
- * Export all database tables to individual JSON files
+ * Build a database URL for pg_dump/psql commands
  */
-const exportTablesToFiles = async (backupDir) => {
-  try {
-    const tablesResult = await client.query(`
-      SELECT tablename
-      FROM pg_tables
-      WHERE schemaname = 'public'
-      ORDER BY tablename
-    `);
-
-    const tables = tablesResult.rows.map((r) => r.tablename);
-    console.log(`[BACKUP] Found ${tables.length} tables to backup`);
-
-    const exportedFiles = [];
-
-    for (const table of tables) {
-      try {
-        // Safely quote table name
-        const safeTableName = `"${table.replace(/"/g, '""')}"`;
-        const result = await client.query(`SELECT * FROM ${safeTableName}`);
-        const filePath = path.join(backupDir, `${table}.json`);
-
-        fs.writeFileSync(
-          filePath,
-          JSON.stringify(
-            {
-              table_name: table,
-              row_count: result.rows.length,
-              exported_at: new Date().toISOString(),
-              data: result.rows,
-            },
-            null,
-            2
-          )
-        );
-
-        exportedFiles.push(filePath);
-        console.log(`[BACKUP] Exported table: ${table} (${result.rows.length} rows)`);
-      } catch (err) {
-        console.error(`[BACKUP ERROR] Failed to export table ${table}:`, err.message);
-      }
-    }
-
-    return exportedFiles;
-  } catch (err) {
-    console.error("[BACKUP ERROR] Failed to query tables:", err.message);
-    throw err;
+const buildDatabaseUrl = () => {
+  if (process.env.DATABASE_URL) {
+    return process.env.DATABASE_URL;
   }
+
+  const user = encodeURIComponent(process.env.DB_USER || "postgres");
+  const password = encodeURIComponent(process.env.DB_PASSWORD || "12345678");
+  const host = process.env.DB_HOST || "localhost";
+  const port = Number(process.env.DB_PORT || 5432);
+  const database = process.env.DB_NAME || "postgres";
+  const sslMode =
+    String(process.env.DB_SSL || "").toLowerCase() === "true" ? "require" : "disable";
+
+  return `postgresql://${user}:${password}@${host}:${port}/${database}?sslmode=${sslMode}`;
+};
+
+const getPostgresProcessOptions = () => {
+  const databaseUrl = buildDatabaseUrl();
+  const parsed = new URL(databaseUrl);
+  const password = parsed.password ? decodeURIComponent(parsed.password) : undefined;
+
+  return {
+    databaseUrl,
+    env: {
+      ...process.env,
+      ...(password ? { PGPASSWORD: password } : {}),
+    },
+  };
 };
 
 /**
- * Create a ZIP file from exported table files
+ * Generate a plain SQL dump file with pg_dump
  */
-const createZipFile = async (backupDir, zipFilePath) => {
+const createSqlDumpFile = async (sqlFilePath) => {
+  const { databaseUrl, env } = getPostgresProcessOptions();
+
+  await new Promise((resolve, reject) => {
+    const dumpProcess = spawn(
+      "pg_dump",
+      [
+        "--format=plain",
+        "--clean",
+        "--if-exists",
+        "--no-owner",
+        "--no-privileges",
+        "--dbname",
+        databaseUrl,
+      ],
+      { env }
+    );
+
+    const output = fs.createWriteStream(sqlFilePath);
+    let stderr = "";
+
+    dumpProcess.stdout.pipe(output);
+
+    dumpProcess.stderr.on("data", (chunk) => {
+      stderr += chunk.toString();
+    });
+
+    dumpProcess.on("error", reject);
+    output.on("error", reject);
+
+    dumpProcess.on("close", (code) => {
+      if (code === 0) {
+        resolve();
+        return;
+      }
+
+      reject(new Error(stderr.trim() || `pg_dump exited with code ${code}`));
+    });
+  });
+
+  const stats = fs.statSync(sqlFilePath);
+  console.log(`[BACKUP] SQL dump created: ${sqlFilePath} (${stats.size} bytes)`);
+};
+
+/**
+ * Create a ZIP file containing the SQL dump
+ */
+const createZipFile = async (sqlFilePath, zipFilePath) => {
   return new Promise((resolve, reject) => {
     const output = fs.createWriteStream(zipFilePath);
     const archive = archiver("zip", {
@@ -225,7 +254,7 @@ const createZipFile = async (backupDir, zipFilePath) => {
     });
 
     archive.pipe(output);
-    archive.directory(`${backupDir}/`, false);
+    archive.file(sqlFilePath, { name: path.basename(sqlFilePath) });
     archive.finalize();
   });
 };
@@ -346,23 +375,12 @@ const uploadToGoogleDrive = async (filePath, fileName) => {
 };
 
 /**
- * Clean up temporary JSON files and optionally ZIP file
+ * Clean up temporary SQL dump and optionally ZIP file
  */
-const cleanupTempFiles = async (backupDir, zipFilePath, deleteZip = true) => {
+const cleanupTempFiles = async (sqlFilePath, zipFilePath, deleteZip = true) => {
   try {
-    if (fs.existsSync(backupDir)) {
-      const files = fs.readdirSync(backupDir);
-
-      for (const file of files) {
-        const fullPath = path.join(backupDir, file);
-        if (fs.existsSync(fullPath)) {
-          fs.unlinkSync(fullPath);
-        }
-      }
-
-      if (fs.existsSync(backupDir) && fs.readdirSync(backupDir).length === 0) {
-        fs.rmdirSync(backupDir);
-      }
+    if (fs.existsSync(sqlFilePath)) {
+      fs.unlinkSync(sqlFilePath);
     }
 
     if (deleteZip && fs.existsSync(zipFilePath)) {
@@ -382,22 +400,19 @@ const cleanupTempFiles = async (backupDir, zipFilePath, deleteZip = true) => {
  */
 const performHourlyBackup = async () => {
   const timestamp = new Date().toISOString().replace(/[:.]/g, "-");
-  const backupDir = path.join(BACKUP_TEMP_DIR, `backup_${timestamp}`);
+  const sqlFileName = `ShopPos_Backup_${timestamp}.sql`;
+  const sqlFilePath = path.join(BACKUP_TEMP_DIR, sqlFileName);
   const zipFileName = `ShopPos_Backup_${timestamp}.zip`;
   const zipFilePath = path.join(BACKUP_TEMP_DIR, zipFileName);
 
   try {
     console.log(`\n[BACKUP] Starting hourly backup at ${new Date().toISOString()}`);
 
-    if (!fs.existsSync(backupDir)) {
-      fs.mkdirSync(backupDir, { recursive: true });
-    }
-
-    console.log("[BACKUP] Exporting database tables...");
-    await exportTablesToFiles(backupDir);
+    console.log("[BACKUP] Creating SQL dump...");
+    await createSqlDumpFile(sqlFilePath);
 
     console.log("[BACKUP] Creating ZIP file...");
-    await createZipFile(backupDir, zipFilePath);
+    await createZipFile(sqlFilePath, zipFilePath);
 
     if (!fs.existsSync(zipFilePath)) {
       throw new Error("ZIP file was not created");
@@ -416,7 +431,7 @@ const performHourlyBackup = async () => {
     const driveResponse = await uploadToGoogleDrive(zipFilePath, zipFileName);
 
     console.log("[BACKUP] Cleaning up temporary files...");
-    await cleanupTempFiles(backupDir, zipFilePath, true);
+    await cleanupTempFiles(sqlFilePath, zipFilePath, true);
 
     console.log(
       `[BACKUP] Hourly backup completed successfully at ${new Date().toISOString()}\n`
@@ -434,9 +449,9 @@ const performHourlyBackup = async () => {
     // Preserve ZIP if it exists
     const preservedPath = preserveFailedZip(zipFilePath);
 
-    // Clean JSON temp files, but do NOT delete original ZIP on failure
+    // Clean SQL temp file, but do NOT delete original ZIP on failure
     try {
-      await cleanupTempFiles(backupDir, zipFilePath, false);
+      await cleanupTempFiles(sqlFilePath, zipFilePath, false);
     } catch (cleanupErr) {
       console.error("[BACKUP ERROR] Cleanup after failure failed:", cleanupErr.message);
     }

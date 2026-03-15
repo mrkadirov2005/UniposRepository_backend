@@ -2,6 +2,77 @@ import { client } from "../config/dbcon.js";
 import { logger } from "../middleware/Logger.js";
 import { extractJWT } from "../middleware/extractToken.js";
 
+const quoteIdentifier = (value) => `"${String(value).replace(/"/g, '""')}"`;
+
+const getTableColumns = async (tableName) => {
+    const { rows } = await client.query(
+        `
+            SELECT column_name, data_type, udt_name
+            FROM information_schema.columns
+            WHERE table_schema = 'public' AND table_name = $1
+            ORDER BY ordinal_position
+        `,
+        [tableName]
+    );
+
+    return rows.reduce((acc, column) => {
+        acc[column.column_name] = column;
+        return acc;
+    }, {});
+};
+
+const normalizeArrayValue = (value) => {
+    if (value == null) return value;
+    if (Array.isArray(value)) return value;
+
+    if (typeof value === "string") {
+        const trimmed = value.trim();
+
+        if (trimmed === "") return [];
+        if (trimmed === "\\N") return null;
+
+        if (trimmed.startsWith("{") && trimmed.endsWith("}")) {
+            return trimmed;
+        }
+
+        if (trimmed.startsWith("[") && trimmed.endsWith("]")) {
+            try {
+                const parsed = JSON.parse(trimmed);
+                return Array.isArray(parsed) ? parsed : [parsed];
+            } catch {
+                return [trimmed];
+            }
+        }
+
+        if (trimmed.includes(",")) {
+            return trimmed
+                .split(",")
+                .map((item) => item.trim())
+                .filter(Boolean);
+        }
+
+        return [trimmed];
+    }
+
+    return [value];
+};
+
+const normalizeValue = (value, column) => {
+    if (!column) return value;
+    if (value === "\\N") return null;
+
+    const isArrayColumn = typeof column.udt_name === "string" && column.udt_name.startsWith("_");
+    if (isArrayColumn) {
+        return normalizeArrayValue(value);
+    }
+
+    if ((column.data_type === "json" || column.data_type === "jsonb") && value != null) {
+        return typeof value === "string" ? value : JSON.stringify(value);
+    }
+
+    return value;
+};
+
 export const restoreDatabaseBackup = async (req, res) => {
     const { data } = req.body;
     const user_id = req.headers["uuid"] || extractJWT(req.headers["authorization"]);
@@ -18,20 +89,25 @@ export const restoreDatabaseBackup = async (req, res) => {
         for (const tableName of Object.keys(data)) {
             const rows = data[tableName];
             if (Array.isArray(rows) === false) continue;
+            const columnsMeta = await getTableColumns(tableName);
+            const quotedTableName = quoteIdentifier(tableName);
 
             // Clear table
-            await client.query(`DELETE FROM ${tableName}`);
+            await client.query(`DELETE FROM ${quotedTableName}`);
 
             for (const row of rows) {
                 const columns = Object.keys(row);
-                const values = Object.values(row);
+                const values = columns.map((columnName) =>
+                    normalizeValue(row[columnName], columnsMeta[columnName])
+                );
 
                 if (columns.length === 0) continue;
 
                 const placeholders = columns.map((_, i) => `$${i + 1}`).join(",");
+                const quotedColumns = columns.map(quoteIdentifier).join(",");
 
                 const query = `
-                    INSERT INTO ${tableName} (${columns.join(",")})
+                    INSERT INTO ${quotedTableName} (${quotedColumns})
                     VALUES (${placeholders})
                 `;
 

@@ -1,10 +1,18 @@
 import express from "express";
-import { downloadDatabaseBackup } from "../controllers/backupController.js";
+import fs from "fs";
+import multer from "multer";
+import {
+  downloadDatabaseBackup,
+  downloadDatabaseSqlDump,
+  restoreDatabaseSqlDump,
+} from "../controllers/backupController.js";
 import { downloadSheetsBackup, restoreDatabaseBackup } from "../controllers/restoreController.js";
 import { manualBackup } from "../jobs/update.cronjob.js";
 import fetch from "node-fetch"; // if your Node.js version < 18
 
 const router = express.Router();
+fs.mkdirSync("tmp/sql-restores", { recursive: true });
+const upload = multer({ dest: "tmp/sql-restores/" });
 
 // Apply the increased limit ONLY to the restore route
 router.post("/restore", 
@@ -14,6 +22,8 @@ router.post("/restore",
 
 // Backup route keeps the default limit
 router.post("/backup", downloadDatabaseBackup);
+router.post("/backup-sql", downloadDatabaseSqlDump);
+router.post("/restore-sql", upload.single("file"), restoreDatabaseSqlDump);
 
 // Manual trigger for Google Drive backup
 router.post("/manual-backup-drive", async (req, res) => {
