@@ -13,7 +13,7 @@ const clientConfig = connectionString
       user: process.env.DB_USER || "postgres",
       host: process.env.DB_HOST || "localhost",
       database: process.env.DB_NAME || "postgres",
-      password: process.env.DB_PASSWORD || "12345678",
+      password: process.env.DB_PASSWORD || "Ifromurgut2005$",
       port: Number(process.env.DB_PORT || 5432),
       ...(useSsl ? { ssl: { rejectUnauthorized: false } } : {}),
     };

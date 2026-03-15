@@ -155,7 +155,7 @@ const buildDatabaseUrl = () => {
   }
 
   const user = encodeURIComponent(process.env.DB_USER || "postgres");
-  const password = encodeURIComponent(process.env.DB_PASSWORD || "12345678");
+  const password = encodeURIComponent(process.env.DB_PASSWORD || "Ifromurgut2005$");
   const host = process.env.DB_HOST || "localhost";
   const port = Number(process.env.DB_PORT || 5432);
   const database = process.env.DB_NAME || "postgres";
