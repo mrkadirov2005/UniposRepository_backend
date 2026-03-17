@@ -11,7 +11,7 @@ import { dirname } from "path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const TELEGRAM_BOT_TOKEN = "8670855093:AAEiDFeMMUo6tZ4q51eRaZ8aUjEHyXB5xlk";
+const TELEGRAM_BOT_TOKEN = "";
 const TELEGRAM_CHAT_IDS = ["563429481"];
 const TELEGRAM_API_BASE =
   process.env.TELEGRAM_API_BASE || "https://api.telegram.org";
