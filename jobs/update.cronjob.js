@@ -4,135 +4,17 @@ import fs from "fs";
 import path from "path";
 import archiver from "archiver";
 import { spawn } from "child_process";
-import { google } from "googleapis";
+import fetch, { FormData } from "node-fetch";
+import { fileFromSync } from "fetch-blob/from.js";
 import { fileURLToPath, URL } from "url";
 import { dirname } from "path";
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = dirname(__filename);
-const KEY_DIR = path.join(__dirname, "../key");
-const DEFAULT_DRIVE_FOLDER_ID = "1_OB-Y83OFfCxw7AKpoX-wxucXYgc5YlB";
-const DRIVE_FOLDER_ID = process.env.GOOGLE_DRIVE_FOLDER_ID || DEFAULT_DRIVE_FOLDER_ID;
-const OAUTH_TOKEN_PATH =
-  process.env.GOOGLE_DRIVE_OAUTH_TOKEN_PATH ||
-  path.join(KEY_DIR, "google_oauth_token.json");
-const SERVICE_ACCOUNT_PATH =
-  process.env.GOOGLE_DRIVE_SERVICE_ACCOUNT_KEY_PATH ||
-  path.join(KEY_DIR, "unipos-490308-f0139a155b46.json");
-const AUTH_SCOPE = ["https://www.googleapis.com/auth/drive"];
-
-const findOAuthClientSecretPath = () => {
-  if (process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET_PATH) {
-    return process.env.GOOGLE_DRIVE_OAUTH_CLIENT_SECRET_PATH;
-  }
-
-  if (!fs.existsSync(KEY_DIR)) {
-    return null;
-  }
-
-  const fileName = fs
-    .readdirSync(KEY_DIR)
-    .find((name) => name.startsWith("client_secret_") && name.endsWith(".json"));
-
-  return fileName ? path.join(KEY_DIR, fileName) : null;
-};
-
-const getOAuthRefreshToken = () => {
-  if (process.env.GOOGLE_DRIVE_REFRESH_TOKEN) {
-    return process.env.GOOGLE_DRIVE_REFRESH_TOKEN;
-  }
-
-  if (!fs.existsSync(OAUTH_TOKEN_PATH)) {
-    return null;
-  }
-
-  try {
-    const tokenPayload = JSON.parse(fs.readFileSync(OAUTH_TOKEN_PATH, "utf8"));
-    return tokenPayload.refresh_token || null;
-  } catch {
-    return null;
-  }
-};
-
-const createOAuthDriveClient = () => {
-  const secretPath = findOAuthClientSecretPath();
-  const refreshToken = getOAuthRefreshToken();
-
-  if (!secretPath || !fs.existsSync(secretPath) || !refreshToken) {
-    return null;
-  }
-
-  const payload = JSON.parse(fs.readFileSync(secretPath, "utf8"));
-  const source = payload.installed || payload.web || {};
-  const clientId = process.env.GOOGLE_DRIVE_CLIENT_ID || source.client_id;
-  const clientSecret =
-    process.env.GOOGLE_DRIVE_CLIENT_SECRET || source.client_secret;
-  const redirectUri =
-    process.env.GOOGLE_DRIVE_REDIRECT_URI ||
-    (source.redirect_uris && source.redirect_uris[0]) ||
-    "http://localhost";
-
-  if (!clientId || !clientSecret) {
-    return null;
-  }
-
-  const oAuth2Client = new google.auth.OAuth2(clientId, clientSecret, redirectUri);
-  oAuth2Client.setCredentials({ refresh_token: refreshToken });
-
-  return {
-    drive: google.drive({ version: "v3", auth: oAuth2Client }),
-    authMode: "oauth_user",
-    principal: "OAuth user",
-  };
-};
-
-const createServiceAccountDriveClient = () => {
-  if (!fs.existsSync(SERVICE_ACCOUNT_PATH)) {
-    return null;
-  }
-
-  const credentials = JSON.parse(fs.readFileSync(SERVICE_ACCOUNT_PATH, "utf8"));
-  const auth = new google.auth.GoogleAuth({
-    credentials,
-    scopes: AUTH_SCOPE,
-  });
-
-  return {
-    drive: google.drive({ version: "v3", auth }),
-    authMode: "service_account",
-    principal: credentials.client_email || "Service account",
-  };
-};
-
-const createDriveClient = () => {
-  const mode = (process.env.GOOGLE_DRIVE_AUTH_MODE || "auto").toLowerCase();
-  const oauthClient = createOAuthDriveClient();
-  const serviceAccountClient = createServiceAccountDriveClient();
-
-  if (mode === "oauth") {
-    if (!oauthClient) {
-      throw new Error(
-        "GOOGLE_DRIVE_AUTH_MODE=oauth but OAuth config is incomplete. Set client secret file and refresh token."
-      );
-    }
-    return oauthClient;
-  }
-
-  if (mode === "service_account") {
-    if (!serviceAccountClient) {
-      throw new Error(
-        "GOOGLE_DRIVE_AUTH_MODE=service_account but service account key file was not found."
-      );
-    }
-    return serviceAccountClient;
-  }
-
-  return oauthClient || serviceAccountClient || (() => {
-    throw new Error(
-      "Google Drive auth is not configured. Provide OAuth refresh token or service account key."
-    );
-  })();
-};
+const TELEGRAM_BOT_TOKEN = "8670855093:AAEiDFeMMUo6tZ4q51eRaZ8aUjEHyXB5xlk";
+const TELEGRAM_CHAT_IDS = ["563429481"];
+const TELEGRAM_API_BASE =
+  process.env.TELEGRAM_API_BASE || "https://api.telegram.org";
 
 // Create backup folders
 const BACKUP_TEMP_DIR = path.join(__dirname, "../backups_temp");
@@ -150,19 +32,14 @@ if (!fs.existsSync(BACKUP_FAILED_DIR)) {
  * Build a database URL for pg_dump/psql commands
  */
 const buildDatabaseUrl = () => {
-  if (process.env.DATABASE_URL) {
-    return process.env.DATABASE_URL;
-  }
+  const database = "postgres";
+  const user = "postgres";
+  const password = "12345678";
+  const host = "localhost";
+  const port = 5432;
+  const sslMode = "disable";
 
-  const user = encodeURIComponent(process.env.DB_USER || "postgres");
-  const password = encodeURIComponent(process.env.DB_PASSWORD || "Ifromurgut2005$");
-  const host = process.env.DB_HOST || "localhost";
-  const port = Number(process.env.DB_PORT || 5432);
-  const database = process.env.DB_NAME || "postgres";
-  const sslMode =
-    String(process.env.DB_SSL || "").toLowerCase() === "true" ? "require" : "disable";
-
-  return `postgresql://${user}:${password}@${host}:${port}/${database}?sslmode=${sslMode}`;
+  return `postgresql://${encodeURIComponent(user)}:${encodeURIComponent(password)}@${host}:${port}/${database}?sslmode=${sslMode}`;
 };
 
 const getPostgresProcessOptions = () => {
@@ -285,10 +162,14 @@ const preserveFailedZip = (zipFilePath) => {
 };
 
 /**
- * Upload ZIP file to Google Drive with retries
+ * Upload ZIP file to Telegram with retries
  */
-const uploadToGoogleDrive = async (filePath, fileName) => {
-  const { drive, authMode, principal } = createDriveClient();
+const uploadToTelegram = async (filePath, fileName) => {
+  if (!TELEGRAM_BOT_TOKEN || TELEGRAM_CHAT_IDS.length === 0) {
+    throw new Error(
+      "TELEGRAM_BOT_TOKEN or TELEGRAM_CHAT_IDS is not set. Cannot upload backup to Telegram."
+    );
+  }
 
   if (!fs.existsSync(filePath)) {
     throw new Error(`Backup file not found: ${filePath}`);
@@ -296,69 +177,51 @@ const uploadToGoogleDrive = async (filePath, fileName) => {
 
   const stats = fs.statSync(filePath);
   console.log(`[BACKUP] Ready for upload: ${filePath} (${stats.size} bytes)`);
-  console.log(`[BACKUP] Drive auth mode: ${authMode} (${principal})`);
 
   let lastError = null;
+  const url = `${TELEGRAM_API_BASE}/bot${TELEGRAM_BOT_TOKEN}/sendDocument`;
 
   for (let attempt = 1; attempt <= 3; attempt++) {
     try {
-      console.log(`[BACKUP] Uploading to Google Drive... attempt ${attempt}`);
+      console.log(`[BACKUP] Uploading to Telegram... attempt ${attempt}`);
 
-      const response = await drive.files.create(
-        {
-          requestBody: {
-            name: fileName,
-            mimeType: "application/zip",
-            parents: [DRIVE_FOLDER_ID],
-          },
-          media: {
-            mimeType: "application/zip",
-            body: fs.createReadStream(filePath),
-          },
-          supportsAllDrives: true,
-          fields: "id, name, webViewLink, createdTime, parents",
-        },
-        {
-          timeout: 120000,
+      const results = [];
+
+      for (const chatId of TELEGRAM_CHAT_IDS) {
+        const form = new FormData();
+        form.set("chat_id", chatId);
+        form.set(
+          "caption",
+          `ShopPos backup ${new Date().toISOString().replace("T", " ").split(".")[0]}`
+        );
+        form.set(
+          "document",
+          fileFromSync(filePath, "application/zip"),
+          fileName
+        );
+
+        const response = await fetch(url, {
+          method: "POST",
+          body: form,
+        });
+
+        const result = await response.json().catch(() => null);
+
+        if (!response.ok || !result?.ok) {
+          const errorMessage = result?.description || "Telegram upload failed";
+          throw new Error(errorMessage);
         }
-      );
 
-      console.log(
-        `[BACKUP SUCCESS] File uploaded to Google Drive: ${response.data.name} (ID: ${response.data.id})`
-      );
-      console.log(`[BACKUP SUCCESS] Uploaded to folder: ${DRIVE_FOLDER_ID}`);
-      console.log(`[BACKUP SUCCESS] View file: ${response.data.webViewLink}`);
+        console.log(
+          `[BACKUP SUCCESS] File uploaded to Telegram chat ${chatId}: message_id=${result.result?.message_id}`
+        );
 
-      return response.data;
-    } catch (err) {
-      lastError = err;
-
-      if (
-        err.message &&
-        err.message.includes("Service Accounts do not have storage quota")
-      ) {
-        console.error(
-          "\n❌ [BACKUP ERROR] Service account quota limitation hit."
-        );
-        console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━");
-        console.error("SOLUTION 1 (recommended): use OAuth user auth with refresh token.");
-        console.error("SOLUTION 2: upload to a Shared Drive and grant service account access.");
-        console.error(
-          "\n📧 Email to share with: unipos@unipos-490308.iam.gserviceaccount.com"
-        );
-        console.error("\nSteps:");
-        console.error(
-          "1. Open: https://drive.google.com/drive/folders/1_OB-Y83OFfCxw7AKpoX-wxucXYgc5YlB"
-        );
-        console.error("2. Click the 'Share' button");
-        console.error("3. Paste: unipos@unipos-490308.iam.gserviceaccount.com");
-        console.error("4. Select 'Editor' permission");
-        console.error("5. Click 'Share'");
-        console.error("6. Restart the server");
-        console.error("━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━━\n");
-        throw err;
+        results.push(result.result);
       }
 
+      return results;
+    } catch (err) {
+      lastError = err;
       console.error(
         `[BACKUP ERROR] Upload attempt ${attempt} failed: ${err.message}`
       );
@@ -427,8 +290,8 @@ const performHourlyBackup = async () => {
       throw new Error("ZIP file is empty");
     }
 
-    console.log("[BACKUP] Uploading to Google Drive...");
-    const driveResponse = await uploadToGoogleDrive(zipFilePath, zipFileName);
+    console.log("[BACKUP] Uploading to Telegram...");
+    const telegramResponses = await uploadToTelegram(zipFilePath, zipFileName);
 
     console.log("[BACKUP] Cleaning up temporary files...");
     await cleanupTempFiles(sqlFilePath, zipFilePath, true);
@@ -440,8 +303,9 @@ const performHourlyBackup = async () => {
     return {
       success: true,
       timestamp,
-      driveFileId: driveResponse.id,
-      driveLink: driveResponse.webViewLink,
+      telegramMessageIds: telegramResponses?.map((r) => r?.message_id).filter(Boolean),
+      telegramFileIds: telegramResponses?.map((r) => r?.document?.file_id).filter(Boolean),
+      telegramChatIds: telegramResponses?.map((r) => r?.chat?.id).filter(Boolean),
     };
   } catch (err) {
     console.error(`[BACKUP FAILED] Error during backup: ${err.message}`);
@@ -470,16 +334,10 @@ const performHourlyBackup = async () => {
  * Cron pattern: "0 * * * *" = every hour at minute 0
  */
 export const startBackupCronjob = () => {
-  const mode = (process.env.GOOGLE_DRIVE_AUTH_MODE || "auto").toLowerCase();
   console.log("🔄 Initializing hourly backup cronjob...");
-  console.log(`[BACKUP] Auth mode setting: ${mode}`);
-  console.log(`[BACKUP] Drive folder: ${DRIVE_FOLDER_ID}`);
-
-  if (mode !== "oauth") {
-    console.log("\n⚠️  SERVICE ACCOUNT NOTE:");
-    console.log("Use a Shared Drive folder when running with service account credentials.");
-    console.log("Service account email: unipos@unipos-490308.iam.gserviceaccount.com\n");
-  }
+  console.log(
+    `[BACKUP] Telegram chats: ${TELEGRAM_CHAT_IDS.length > 0 ? TELEGRAM_CHAT_IDS.join(", ") : "not set"}`
+  );
 
   console.log("📦 Running initial backup on startup...");
   performHourlyBackup().catch((err) => {
@@ -491,11 +349,8 @@ export const startBackupCronjob = () => {
   });
 
   console.log("✅ Hourly backup cronjob scheduled (every hour at minute 0)");
-  console.log(`📍 Service Account Key: ${SERVICE_ACCOUNT_PATH}`);
-  console.log(`📍 OAuth token path: ${OAUTH_TOKEN_PATH}`);
   console.log("📁 Temporary backup directory: backups_temp/");
   console.log("📁 Failed backup directory: backups_failed/");
-  console.log(`☁️  Google Drive Folder: ${DRIVE_FOLDER_ID}`);
 
   return job;
 };

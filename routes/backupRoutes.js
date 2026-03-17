@@ -25,18 +25,17 @@ router.post("/backup", downloadDatabaseBackup);
 router.post("/backup-sql", downloadDatabaseSqlDump);
 router.post("/restore-sql", upload.single("file"), restoreDatabaseSqlDump);
 
-// Manual trigger for Google Drive backup
-router.post("/manual-backup-drive", async (req, res) => {
+const triggerTelegramBackup = async (req, res) => {
   try {
     const result = await manualBackup();
     if (result.success) {
       res.status(200).json({
-        message: "Backup to Google Drive completed successfully",
+        message: "Backup to Telegram completed successfully",
         data: result,
       });
     } else {
       res.status(500).json({
-        message: "Backup to Google Drive failed",
+        message: "Backup to Telegram failed",
         error: result.error,
       });
     }
@@ -44,7 +43,13 @@ router.post("/manual-backup-drive", async (req, res) => {
     console.error("Error triggering manual backup:", error);
     res.status(500).json({ message: "Failed to trigger manual backup" });
   }
-});
+};
+
+// Manual trigger for Telegram backup
+router.post("/manual-backup-telegram", triggerTelegramBackup);
+
+// Legacy alias (previously Google Drive)
+router.post("/manual-backup-drive", triggerTelegramBackup);
 
 /// routes/backupProxyRoutes.js
 
