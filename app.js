@@ -188,7 +188,16 @@ const options = {
 };
 
 const swaggerSpec = swaggerJsdoc(options);
-app.use(cors());
+
+// CORS: allow all origins
+app.use(
+  cors({
+    origin: "*",
+    methods: ["GET", "POST", "PUT", "PATCH", "DELETE", "OPTIONS"],
+    allowedHeaders: ["Content-Type", "Authorization"],
+  })
+);
+app.options("*", cors());
 // Serve Swagger UI at /api-docs
 app.use("/api-docs", swaggerUi.serve, swaggerUi.setup(swaggerSpec));
 
